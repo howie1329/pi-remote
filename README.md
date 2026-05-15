@@ -1,38 +1,47 @@
 # pi-remote
 
-`pi-remote` is a planned installable [pi](https://pi.dev) extension package that exposes an **active pi TUI session** to a browser or mobile UI over LAN or Tailscale.
+`pi-remote` is a planned installable [pi](https://pi.dev) extension package that exposes an **active pi TUI session** to one authenticated browser/mobile client over LAN or Tailscale.
 
-From inside a running pi session, the user runs:
+From inside a running pi session:
 
 ```text
 /remote
 ```
 
-The extension starts an embedded Express/WebSocket server, prints local/LAN/Tailscale URLs, and lets authenticated browser clients view the same live session. One connected client may act as the controller and send prompts, steering messages, follow-ups, or abort requests.
+The extension starts an embedded HTTP/WebSocket server, prints local/LAN/Tailscale URLs plus a pairing token, serves a prebuilt SvelteKit static UI, and lets the authenticated browser mirror the live session, submit text prompts when pi is idle, and abort active work.
 
-> Status: design scaffold. See [`docs/implementation-plan.md`](./docs/implementation-plan.md) for the current build plan.
+> Status: MVP planning. Implementation has not started yet.
 
-## Goals
+## MVP Scope
 
-- Attach to the **current active pi TUI session**.
-- Start and stop from a pi slash command: `/remote`.
-- Serve a browser/mobile UI over LAN or Tailscale.
-- Use pairing-token authentication.
-- Support multiple viewers.
-- Allow exactly one controller at a time.
-- Do not allow force takeover of the controller role.
-- Send a session snapshot immediately on connect.
-- Stream live pi session events to connected clients.
-- Support remote prompt, steer, follow-up, and abort controls.
-- Discover Tailscale IPs for printed URLs.
-- Ship as a reusable pi extension package, not as a standalone pi SDK host.
+The MVP is intentionally single-user and focused:
+
+- One authenticated remote browser/mobile client at a time.
+- Reject second authenticated clients.
+- Static web UI can load openly, but WebSocket auth gates all session data and controls.
+- Fresh in-memory pairing token per server start.
+- Default bind address: `0.0.0.0` for LAN/Tailscale use.
+- HTTP/WebSocket for MVP.
+- Snapshot-on-connect: active branch only, last 3 user/assistant messages.
+- Live assistant streaming after connect.
+- Collapsed tool summaries.
+- Remote controls: text prompt when idle and abort while busy.
+- SvelteKit static frontend, prebuilt and served from package-relative `dist/web`.
+- Compiled JS pi extension entrypoint.
+
+See [`docs/mvp.md`](./docs/mvp.md) for the full locked MVP definition.
 
 ## Non-goals
 
-- This is **not** a separate web-hosted agent runtime.
-- This should **not** call `createAgentSession()` or start a new pi SDK session.
-- This should not expose session contents without authentication.
-- This should not allow controller takeover while another client is controlling the session.
+- Not a standalone pi SDK session host.
+- Not a multi-viewer collaboration server in MVP.
+- No controller election/request/release flow in MVP.
+- No steering/follow-up controls in MVP.
+- No image attachments in MVP.
+- No full session tree or branch navigation in MVP.
+- No token persistence in the browser.
+- No HTTPS/WSS in MVP.
+- Not intended for direct public-internet exposure.
 
 ## Intended usage
 
@@ -60,94 +69,100 @@ Tailscale: http://100.x.y.z:49231
 Pairing token: 8391-2044
 ```
 
-Open one of the URLs in a browser, enter the pairing token, and connect as a viewer. A viewer can request control if no other controller is active.
+Open one of the URLs, enter the pairing token, and use the browser/mobile UI as a remote control surface for the active pi session.
 
 ## Planned commands
 
 ```text
-/remote                  Start the remote server if it is not already running
-/remote status           Show server status, URLs, viewers, and controller state
+/remote                  Start server, or show status if already running
+/remote status           Show URLs, token, bind address, and client state
 /remote stop             Stop the embedded server
-/remote restart          Restart the embedded server
-/remote --port 0         Start on an automatically assigned port
-/remote --host 0.0.0.0   Bind to a specific host
+/remote restart          Restart server with a fresh token
+```
+
+Potential later flags:
+
+```text
+/remote --port 49231
+/remote --host 0.0.0.0
 ```
 
 ## Security model
 
-`pi-remote` intentionally exposes an active local development session over the network. Treat it as powerful remote-control software.
+`pi-remote` intentionally exposes a live local agent session over the network. Treat it as powerful remote-control software.
 
-Planned safeguards:
+MVP safeguards:
 
-- In-memory pairing token required before any session data is sent.
-- No unauthenticated WebSocket control messages.
-- No unauthenticated HTTP API exposing session contents.
-- Multiple viewers allowed, but only one controller.
-- No force takeover.
-- Controller role is released on disconnect.
-- Server stops on pi session shutdown/reload.
+- Pairing-token auth required before any session data is sent.
+- Token is generated fresh on every server start.
+- Token is stored only in memory.
+- Browser does not persist token.
+- Only one authenticated client is allowed.
+- Second authenticated clients are rejected.
+- Server shuts down on pi session shutdown/reload/session replacement.
 
-Recommended default behavior:
-
-- Bind explicitly and visibly.
-- Print a clear warning when exposing over LAN/Tailscale.
-- Rotate token on restart.
-- Keep token out of persistent storage.
+Use over trusted LAN or Tailscale. Do **not** expose directly to the public internet.
 
 ## Architecture
 
 ```text
 pi-remote/
+  README.md
+
   docs/
-    implementation-plan.md
+    mvp.md
+    phase-1-backend-plan.md
+    phase-2-frontend-plan.md
 
   src/
-    index.ts                    # pi extension entrypoint
+    extension/
+      index.ts                  # pi extension entrypoint
+      commands.ts               # /remote command parsing
+      state.ts                  # extension runtime state
 
     server/
       createRemoteServer.ts     # Express + WebSocket server
-      auth.ts                   # pairing-token authentication
-      clients.ts                # viewer/controller registry
-      lifecycle.ts              # start/stop/restart server state
-      tailscale.ts              # LAN/Tailscale IP discovery
+      lifecycle.ts              # start/stop/restart/status
+      auth.ts                   # pairing-token auth
+      clients.ts                # single authenticated client policy
+      urls.ts                   # printed URL construction
+      tailscale.ts              # Tailscale IP discovery
 
     protocol/
       messages.ts               # typed client/server messages
-      snapshots.ts              # session snapshot protocol
-      events.ts                 # normalized pi live events
+      snapshots.ts              # snapshot protocol types
+      events.ts                 # live event protocol types
 
     pi/
-      bridge.ts                 # pi ExtensionAPI/context bridge
-      controls.ts               # prompt/steer/follow-up/abort handlers
-      sessionSnapshot.ts        # active session serialization
+      bridge.ts                 # active pi runtime bridge
+      controls.ts               # prompt/abort control mapping
+      sessionSnapshot.ts        # last-3 active branch snapshot
+      normalizeMessage.ts       # safe message normalization
 
     web/
-      index.html
-      src/
-        main.tsx
-        App.tsx
-        wsClient.ts
-        components/
-          SessionView.tsx
-          Composer.tsx
-          ConnectionStatus.tsx
-          ControllerBadge.tsx
+      ...                       # SvelteKit static frontend source
+
+  dist/
+    extension/
+      index.js                  # compiled extension entrypoint
+    web/
+      ...                       # prebuilt SvelteKit static assets
 ```
 
 ## pi integration
 
-The extension should be registered through the pi package manifest:
+The package should expose the compiled extension through the pi package manifest:
 
 ```json
 {
   "keywords": ["pi-package", "pi-extension"],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./dist/extension/index.js"]
   }
 }
 ```
 
-The extension entrypoint should look conceptually like this:
+The extension must attach to the active pi runtime:
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -156,80 +171,28 @@ export default function piRemote(pi: ExtensionAPI) {
   pi.registerCommand("remote", {
     description: "Start remote browser/mobile access for this pi session",
     handler: async (args, ctx) => {
-      // Start, stop, restart, or report status.
+      // start/status/stop/restart server
     },
   });
 
   pi.on("message_update", async (event, ctx) => {
-    // Broadcast normalized live session updates.
+    // broadcast normalized live updates
   });
 
   pi.on("session_shutdown", async () => {
-    // Stop server and clean up clients.
+    // stop server and clean up
   });
 }
 ```
 
-## Protocol overview
+It must **not** call `createAgentSession()` for the remote UI.
 
-Browser clients connect over WebSocket and authenticate first:
+## Implementation plans
 
-```ts
-type ClientToServer =
-  | { type: "auth"; token: string }
-  | { type: "request_control" }
-  | { type: "release_control" }
-  | { type: "prompt"; text: string }
-  | { type: "steer"; text: string }
-  | { type: "follow_up"; text: string }
-  | { type: "abort" };
-```
+Implementation is split into two phases:
 
-Server messages include authentication results, snapshots, live session events, and controller changes:
-
-```ts
-type ServerToClient =
-  | { type: "auth_ok"; clientId: string; role: "viewer" | "controller" }
-  | { type: "auth_error"; reason: string }
-  | { type: "snapshot"; snapshot: SessionSnapshot }
-  | { type: "message_start"; message: RemoteMessage }
-  | { type: "message_update"; message: RemoteMessage }
-  | { type: "message_end"; message: RemoteMessage }
-  | { type: "tool_start"; tool: RemoteToolEvent }
-  | { type: "tool_update"; tool: RemoteToolEvent }
-  | { type: "tool_end"; tool: RemoteToolEvent }
-  | { type: "agent_start" }
-  | { type: "agent_end" }
-  | { type: "controller_changed"; controllerClientId?: string }
-  | { type: "control_denied"; reason: "controller_exists" };
-```
-
-## Remote controls
-
-Planned mappings:
-
-- Prompt while idle: `pi.sendUserMessage(text)`
-- Steering while active: `pi.sendUserMessage(text, { deliverAs: "steer" })`
-- Follow-up: `pi.sendUserMessage(text, { deliverAs: "followUp" })`
-- Abort: `ctx.abort()`
-
-Control messages must be accepted only from the current controller client.
-
-## Development plan
-
-1. Package skeleton and pi manifest.
-2. `/remote` command with server lifecycle management.
-3. WebSocket auth and client registry.
-4. Snapshot-on-connect.
-5. Live pi event streaming.
-6. One-controller control protocol.
-7. LAN/Tailscale URL discovery.
-8. Browser/mobile UI polish.
-9. Tests for protocol, auth, client registry, and lifecycle behavior.
-
-## Documentation
-
-- [`docs/implementation-plan.md`](./docs/implementation-plan.md) — detailed implementation plan.
+1. [`docs/phase-1-backend-plan.md`](./docs/phase-1-backend-plan.md) — pi extension backend, embedded server, auth, snapshot, streaming, prompt/abort controls.
+2. [`docs/phase-2-frontend-plan.md`](./docs/phase-2-frontend-plan.md) — SvelteKit static browser/mobile UI.
 
 ## License
 
